@@ -222,8 +222,8 @@ defmodule Shooter.Server do
 
   defp valid_base_transition?(new_position, field), do: new_position in 0..(@field_size - 1) && Enum.at(field, new_position) in [:grass, :fire]
 
-  defp valid_horizontal_transition?(position, new_position, :rigth), do: position < new_position && position_in_same_line?(position, new_position)
-  defp valid_horizontal_transition?(position, new_position, :left), do: position > new_position && position_in_same_line?(position, new_position)
+  defp valid_horizontal_transition?(position, new_position, :right), do: position < new_position && positions_in_same_line?(position, new_position)
+  defp valid_horizontal_transition?(position, new_position, :left), do: position > new_position && positions_in_same_line?(position, new_position)
   defp valid_horizontal_transition?(_, _, _), do: true
 
   defp do_shoot(field, current_position, direction) do
@@ -254,7 +254,7 @@ defmodule Shooter.Server do
       |> Enum.filter(fn
         {target, position} when target in [:warrior, :wall] ->
           case direction do
-            dem when dem in [:left, :right] -> position_in_same_line?(current_position, position)
+            dem when dem in [:left, :right] -> positions_in_same_line?(current_position, position)
             dem when dem == :up -> position >= 0 && current_position > position
             dem when dem == :down -> current_position < position
           end;
@@ -267,12 +267,12 @@ defmodule Shooter.Server do
     end
   end
 
-  def position_in_same_line?(current_position, target_position) when current_position >= 0 and target_position >= 0 do
+  def positions_in_same_line?(current_position, target_position) when current_position >= 0 and target_position >= 0 do
     line_number_by_position(current_position) == line_number_by_position(target_position)
   end
-  def position_in_same_line?(_, _), do: false
+  def positions_in_same_line?(_, _), do: false
 
-  def line_number_by_position(position), do: div(position, 20)
+  defp line_number_by_position(position), do: div(position, 20)
 
   defp build_initial_state() do
     base_field = Enum.map(2..(@field_size - 1), fn _n -> Enum.random(@field_units) end)

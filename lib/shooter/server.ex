@@ -16,7 +16,7 @@ defmodule Shooter.Server do
 
   @shooting_max_distance 3
 
-  @inactive_timeout 20_000
+  @inactive_timeout 60 * 3 * 1000 # 3 minutes
 
   def start_link(opts) do
     session_id = Keyword.fetch!(opts, :session_id) |> String.replace("-", "-") |> String.to_atom() |> IO.inspect()

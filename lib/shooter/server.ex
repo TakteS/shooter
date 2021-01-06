@@ -1,11 +1,12 @@
+# This code is very stupid. I warned you.
 defmodule Shooter.Server do
   defmodule State do
-    defstruct [available_colors: [:blue, :red], names: %{}, game_field: nil, positions: nil, reason_of_finish: nil]
+    defstruct [scores: %{blue: 0, red: 0}, available_colors: [:blue, :red], players: %{}, game_field: nil, positions: nil, reason_of_finish: nil]
   end
 
   use GenServer
 
-  alias Shooter.Warrior
+  alias Shooter.{Player, Flag}
 
   require Logger
 
@@ -33,140 +34,148 @@ defmodule Shooter.Server do
     {:ok, state, @inactive_timeout}
   end
 
-  def get_field(pid) do
-    GenServer.call(pid, :get_field)
-  end
+  def get_field_and_scores(pid), do: GenServer.call(pid, :get_field_and_scores)
 
-  def bind_color(pid, name) do
-    GenServer.call(pid, {:bind_color, name})
-  end
+  def get_players(pid), do: GenServer.call(pid, :get_players)
 
-  def get_warriors(pid) do
-    GenServer.call(pid, :get_warriors)
-  end
+  def get_reason_of_finish(pid), do: GenServer.call(pid, :get_reason_of_finish)
 
-  def get_reason_of_finish(pid) do
-    GenServer.call(pid, :get_reason_of_finish)
-  end
+  def pick_color(pid, name, user_session), do: GenServer.call(pid, {:pick_color, name, user_session})
 
   def move(pid, color, direction) when direction in @directions do
     GenServer.call(pid, {:move, color, direction})
   end
 
-  def shoot(pid, color) do
-    GenServer.call(pid, {:shoot, color})
+  def shoot(pid, color), do: GenServer.call(pid, {:shoot, color})
+
+  def add_wall(pid, color), do: GenServer.call(pid, {:add_wall, color})
+
+  def restart_game(pid), do: GenServer.call(pid, :restart_game)
+
+  def handle_call(:get_field_and_scores, _from, state) do
+    {:reply, {state.game_field, state.scores}, state, @inactive_timeout}
   end
 
-  def add_wall(pid, color) do
-    GenServer.call(pid, {:add_wall, color})
-  end
-
-  def restart_game(pid) do
-    GenServer.call(pid, :restart_game)
-  end
-
-  def handle_call(:get_field, _from, state) do
-    {:reply, state.game_field, state, @inactive_timeout}
-  end
-
-  def handle_call({:bind_color, name}, _from, state) do
-    if state.available_colors != [] do
-      [color | rest_collors] = state.available_colors
-      updated_state = %{state | available_colors: rest_collors, names: Map.put(state.names, name, color)}
-      {:reply, color, updated_state, @inactive_timeout}
-    else
-      {:reply, {:error, :no_available_colors}, state, @inactive_timeout}
-    end
-  end
-
-  def handle_call(:get_warriors, _from, state) do
-    {:reply, state.names, state, @inactive_timeout}
+  def handle_call(:get_players, _from, state) do
+    players = Enum.map(state.players, fn {_k, %{color: color, name: name}} -> {color, name} end)
+    {:reply, players, state, @inactive_timeout}
   end
 
   def handle_call(:get_reason_of_finish, _from, state) do
     {:reply, state.reason_of_finish, state, @inactive_timeout}
   end
 
-  def handle_call(:restart_game, _from, _state) do
-    new_state = build_initial_state()
+  def handle_call(:get_scores, _from, state) do
+    {:reply, state.scores, state}
+  end
+
+  def handle_call({:pick_color, name, user_session}, _from, state) do
+    {color, rest_collors, updated_players} =
+      with {:ok, color} <- check_player_already_joined(user_session, state.players) do
+        {color, state.available_colors, state.players}
+      else
+        {:error, :not_joined} ->
+          cond do
+            state.available_colors != [] ->
+              [color | rest_collors] = state.available_colors
+              {color, rest_collors, Map.put(state.players, user_session, %{name: name, color: color})}
+
+            true ->
+              {:no_available_colors, [], state.players}
+          end
+      end
+
+    updated_state = %{state | available_colors: rest_collors, players: updated_players}
+    {:reply, color, updated_state, @inactive_timeout}
+  end
+
+  def handle_call(:restart_game, _from, state) do
+    new_state = build_initial_state(state.players, state.scores, state.available_colors)
     {:reply, new_state.game_field, new_state, @inactive_timeout}
   end
 
-  def handle_call({:move, color, direction}, _from, %State{game_field: field, positions: positions} = state) do
+  def handle_call({:move, color, direction}, _from, %State{game_field: field, positions: positions, scores: scores} = state) do
     current_position = positions[color] - 1
-    warrior = Enum.at(field, current_position)
+    player = Enum.at(field, current_position)
 
-    {updated_field, updated_positions, reason_of_finish} =
-      case {warrior.direction, direction} do
+    {updated_field, updated_positions, reason_of_finish, updated_scores} =
+      case {player.direction, direction} do
         {current, new} when current != new ->
-          updated_warrior = Warrior.change_direction(warrior, direction)
-          updated_field = List.replace_at(field, current_position, updated_warrior)
-          Logger.debug("Warrior #{color} changed direction on #{direction}")
-          {updated_field, positions, nil}
+          updated_player = Player.change_direction(player, direction)
+          updated_field = List.replace_at(field, current_position, updated_player)
+          Logger.debug("Player #{color} changed direction on #{direction}")
+          {updated_field, positions, nil, scores}
 
         {current, new} when current == new ->
-          Logger.debug("Processing #{color} warrior moving #{new}")
+          Logger.debug("Processing #{color} player moving #{new}")
 
           case can_be_transited(field, current_position, new) do
             {:ok, new_position} ->
-              Logger.debug("New #{color} warrior position is #{new_position}")
-              warrior_or_blood = warrior_or_blood(field, warrior, new_position)
-              reason_of_finish = if warrior_or_blood == :blood, do: "#{color} warrior burned himself", else: nil
+              Logger.debug("New #{color} player position is #{new_position}")
+              player_or_blood = player_or_blood(field, player, new_position)
+              reason_of_finish = if player_or_blood == :blood, do: "#{color} player burned himself", else: nil
+              updated_scores = if player_or_blood == :blood, do: Map.update!(scores, color, & &1 - 1), else: scores
 
               updated_field =
                 field
                 |> List.replace_at(current_position, :grass)
-                |> List.replace_at(new_position, warrior_or_blood)
+                |> List.replace_at(new_position, player_or_blood)
 
               updated_positions = Map.put(positions, color, new_position + 1)
-              {updated_field, updated_positions, reason_of_finish}
+              {updated_field, updated_positions, reason_of_finish, updated_scores}
 
             :error ->
-              {field, positions, nil}
+              {field, positions, nil, scores}
           end
         _ ->
-          {field, positions, nil}
+          {field, positions, nil, scores}
       end
 
-    updated_state = %{state | game_field: updated_field, positions: updated_positions, reason_of_finish: reason_of_finish}
+    updated_state = %{state | game_field: updated_field, positions: updated_positions, reason_of_finish: reason_of_finish, scores: updated_scores}
     {:reply, updated_field, updated_state, @inactive_timeout}
   end
 
-  def handle_call({:shoot, color}, _from, %State{game_field: field, positions: positions} = state) do
+  def handle_call({:shoot, color}, _from, %State{game_field: field, positions: positions, scores: scores} = state) do
     current_position = positions[color] - 1
-    warrior = Enum.at(field, current_position)
+    player = Enum.at(field, current_position)
 
-    {updated_field, reason_of_finish} =
-      case do_shoot(field, current_position, warrior.direction) do
+    {updated_field, reason_of_finish, updated_scores} =
+      case do_shoot(player.color, field, current_position, player.direction) do
         {:wall, position} ->
-          Logger.debug("Warrior #{color} shooted at wall at position #{position}")
-          {List.replace_at(field, position, grass_or_fire()), nil}
+          Logger.debug("Player #{color} shooted at wall at position #{position}")
+          {List.replace_at(field, position, grass_or_fire()), nil, scores}
 
-        {:warrior, position} ->
-          Logger.debug("Warrior #{color} killed his opponent!")
-          {List.replace_at(field, position, :blood), "#{color} warrior killed an opponent"}
+        {:player, position} ->
+          Logger.debug("Player #{color} killed his opponent!")
+          updated_scores = Map.update!(scores, color, & &1 + 1)
+          {List.replace_at(field, position, :blood), "#{color} player killed an opponent", updated_scores}
+
+        {:flag, position} ->
+          Logger.debug("Player #{color} captured opponent's flag!")
+          updated_scores = Map.update!(scores, color, & &1 + 1)
+          {List.replace_at(field, position, :grass), "#{color} player captured opponent's flag", updated_scores}
 
         _ ->
-          Logger.debug("#{color} warrior's bullet didn't reach any target")
-          {field, nil}
+          Logger.debug("#{color} player's bullet didn't reach any target")
+          {field, nil, scores}
       end
 
-    updated_state = %{state | game_field: updated_field, reason_of_finish: reason_of_finish}
+    updated_state = %{state | game_field: updated_field, reason_of_finish: reason_of_finish, scores: updated_scores}
     {:reply, updated_field, updated_state, @inactive_timeout}
   end
 
   def handle_call({:add_wall, color}, _from, %State{game_field: field, positions: positions} = state) do
     current_position = positions[color] - 1
-    warrior = Enum.at(field, current_position)
+    player = Enum.at(field, current_position)
 
     updated_field =
-      case can_add_wall(field, current_position, warrior.direction) do
+      case can_add_wall(field, current_position, player.direction) do
         {:ok, position} ->
-          Logger.debug("Warrior #{color} added wall at position #{position}")
+          Logger.debug("Player #{color} added wall at position #{position}")
           List.replace_at(field, position, :wall)
 
         _ ->
-          Logger.debug("#{color} warrior's cannot add wall at this position")
+          Logger.debug("#{color} player's cannot add wall at this position")
           field
       end
 
@@ -196,7 +205,7 @@ defmodule Shooter.Server do
       {:ok, new_position}
     else
       _ ->
-        Logger.debug("Warrior can't be transited")
+        Logger.debug("Player can't be transited")
         :error
     end
   end
@@ -215,7 +224,7 @@ defmodule Shooter.Server do
       {:ok, new_position}
     else
       _ ->
-        Logger.debug("Warrior can't add wall")
+        Logger.debug("Player can't add wall")
         :error
     end
   end
@@ -226,7 +235,7 @@ defmodule Shooter.Server do
   defp valid_horizontal_transition?(position, new_position, :left), do: position > new_position && positions_in_same_line?(position, new_position)
   defp valid_horizontal_transition?(_, _, _), do: true
 
-  defp do_shoot(field, current_position, direction) do
+  defp do_shoot(color, field, current_position, direction) do
     possible_tagtets =
       case direction do
         :left ->
@@ -250,18 +259,20 @@ defmodule Shooter.Server do
 
     shootable_targets =
       possible_tagtets
-      |> Enum.map(fn {%Warrior{}, position} -> {:warrior, position}; other -> other end)
+      |> Enum.map(fn {%Player{}, position} -> {:player, position};
+                     {%Flag{color: flag_color}, position} -> (if flag_color != color, do: {:flag, position}, else: {:own_flag, position});
+                     other -> other
+      end)
       |> Enum.filter(fn
-        {target, position} when target in [:warrior, :wall] ->
+        {target, position} when target in [:player, :wall, :flag] ->
           case direction do
             dem when dem in [:left, :right] -> positions_in_same_line?(current_position, position)
             dem when dem == :up -> position >= 0 && current_position > position
             dem when dem == :down -> current_position < position
           end;
         _ -> false end)
-      |> List.first()
 
-    case shootable_targets do
+    case List.first(shootable_targets) do
       nil -> :no_targets
       target -> target
     end
@@ -275,19 +286,30 @@ defmodule Shooter.Server do
   defp line_number_by_position(position), do: div(position, 20)
 
   defp build_initial_state() do
-    base_field = Enum.map(2..(@field_size - 1), fn _n -> Enum.random(@field_units) end)
-    initial_field = [Warrior.build(:blue, :down)] ++ base_field ++ [Warrior.build(:red, :up)]
+    build_initial_state(%{}, %{blue: 0, red: 0}, [:blue, :red])
+  end
+
+  defp build_initial_state(players, scores, available_colors) do
+    base_field = Enum.map(3..(@field_size - 2), fn _n -> Enum.random(@field_units) end)
+    initial_field = [Player.build(:blue, :down), Flag.build(:blue)] ++ base_field ++ [Flag.build(:red), Player.build(:red, :up)]
 
     inital_positions = %{blue: 1, red: @field_size}
-    %State{game_field: initial_field, positions: inital_positions}
+    %State{game_field: initial_field, positions: inital_positions, players: players, scores: scores, available_colors: available_colors}
   end
 
   defp grass_or_fire(), do: Enum.random([:grass, :grass, :grass, :grass, :fire])
 
-  defp warrior_or_blood(field, warrior, new_position) do
+  defp player_or_blood(field, player, new_position) do
     case Enum.at(field, new_position) do
       :fire -> :blood
-      _ -> warrior
+      _ -> player
+    end
+  end
+
+  defp check_player_already_joined(user_session, players) do
+    case Map.get(players, user_session) do
+      %{color: color} -> {:ok, color}
+      _ -> {:error, :not_joined}
     end
   end
 end

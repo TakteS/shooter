@@ -7,12 +7,14 @@ defmodule ShooterWeb.LobbyController do
 
   def create(conn, %{"name" => name} = params) do
     session_id = Map.get(params, "session_id")
-    session_id = if session_id == "", do: UUID.uuid1(), else: session_id
+    user_session = UUID.uuid4()
+    session_id = if session_id == "", do: UUID.uuid4(), else: session_id
 
     conn =
       conn
       |> Plug.Conn.put_session(:name, name)
       |> Plug.Conn.put_session(:session_id, session_id)
+      |> Plug.Conn.put_session(:user_session, user_session)
 
     redirect(conn, to: Routes.game_path(conn, :index, session_id))
   end

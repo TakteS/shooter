@@ -1,74 +1,38 @@
 defmodule ShooterWeb.GameLive do
   use ShooterWeb, :live_view
 
-  alias Shooter.{Server, Warrior}
+  alias Shooter.Server
 
   require Logger
 
   @impl true
   def render(assigns) do
-    ~L"""
-    <div id="game" phx-window-keyup="update_field">
-      <%= if @is_game_finished do %>
-        <b>Game was finished because of <%= @reason_of_finish %></b>
-        <br />
-        <button phx-click="restart_game">Start new!</button>
-      <% else %>
-        <%= if @game_field == [] do %>
-          You cannot join this game.
-        <% else %>
-          Link to join game: <%= Routes.lobby_url(ShooterWeb.Endpoint, :index, @session_id) %>
-          <br />
-          <br />
-          <%= for field_units <- Enum.chunk_every(@game_field, @field_width) do %>
-            <div class="field-line">
-              <%= for unit <- field_units do %>
-                <%= case unit do %>
-                  <% :grass -> %> <img src="<%= Routes.static_path(ShooterWeb.Endpoint, "/images/grass.png") %>" height="35" width="35" class="field-unit"/>
-                  <% :wall -> %> <img src="<%= Routes.static_path(ShooterWeb.Endpoint, "/images/wall.png") %>" height="35" width="35" class="field-unit"/>
-                  <% :blood -> %> <img src="<%= Routes.static_path(ShooterWeb.Endpoint, "/images/blood.png") %>" height="35" width="35" class="field-unit"/>
-                  <% :fire -> %> <img src="<%= Routes.static_path(ShooterWeb.Endpoint, "/images/fire.png") %>" height="35" width="35" class="field-unit"/>
-                  <% %Warrior{color: color, direction: direction} -> %> <img src="<%= Routes.static_path(ShooterWeb.Endpoint, "/images/#{color}_warrior_#{direction}.png") %>" height="35" width="35" class="field-unit"/>
-                <% end %>
-              <% end %>
-            </div>
-          <% end %>
-        </div>
-        <div id="warriors">
-          Warriors:
-          <br />
-          <%= for {color, name} <- @warriors do %>
-            <b><%= color %>: </b><%= name %>
-            <br />
-          <% end %>
-        <% end %>
-      <% end %>
-    </div>
-    """
+    ShooterWeb.GameLiveView.render("game_live.html", assigns)
   end
 
   @impl true
-  def mount(_params, %{"name" => name, "session_id" => session_id}, socket) do
+  def mount(_params, %{"name" => name, "session_id" => session_id, "user_session" => user_session}, socket) do
     {:ok, session_pid} = Server.start_link([session_id: session_id])
 
     with true <- connected?(socket),
-         color when color in [:blue, :red] <- Server.bind_color(session_pid, name) do
+         color when color in [:blue, :red] <- Server.pick_color(session_pid, name, user_session) do
       Phoenix.PubSub.subscribe(Shooter.PubSub, topic(session_id))
 
-      field = Server.get_field(session_pid)
-      warriors = Server.get_warriors(session_pid)
+      {field, scores} = Server.get_field_and_scores(session_pid)
+      players = Server.get_players(session_pid)
 
       Phoenix.PubSub.broadcast(Shooter.PubSub, topic(session_id), "player_joined")
-      Logger.info("User #{name} joined to #{session_id} as #{color} warrior")
-      {:ok, assign(socket, game_field: field, field_width: 20, color: color, warriors: warriors, pid: session_pid, session_id: session_id, is_game_finished: nil)}
+      Logger.info("User #{name} joined to #{session_id} as #{color} player")
+      {:ok, assign(socket, game_field: field, scores: scores, field_width: 20, color: color, players: players, pid: session_pid, session_id: session_id, is_game_finished: nil)}
     else
+      :no_available_colors ->
+        {:ok, redirect(socket, to: "/")}
       _ ->
-        Logger.info("User #{name} joined as guest to #{session_id}")
-        {:ok, assign(socket, game_field: [], field_width: 20, warriors: [], is_game_finished: nil)}
+        {:ok, assign(socket, game_field: [], scores: %{}, field_width: 20, players: [], is_game_finished: nil, session_id: session_id)}
     end
   end
   def mount(_, _, socket) do
-    {:ok, assign(socket, game_field: [], field_width: 20, warriors: [], is_game_finished: nil)}
+    {:ok, redirect(socket, to: "/")}
   end
 
   @impl true
@@ -105,12 +69,12 @@ defmodule ShooterWeb.GameLive do
 
   @impl true
   def handle_info("update_field", socket) do
-    current_field = Server.get_field(socket.assigns.pid)
-    {:noreply, assign(socket, game_field: current_field, is_game_finished: nil)}
+    {current_field, scores} = Server.get_field_and_scores(socket.assigns.pid)
+    {:noreply, assign(socket, game_field: current_field, scores: scores, is_game_finished: nil)}
   end
   def handle_info("player_joined", socket) do
-    warriors = Server.get_warriors(socket.assigns.pid)
-    {:noreply, assign(socket, warriors: warriors, is_game_finished: nil)}
+    players = Server.get_players(socket.assigns.pid)
+    {:noreply, assign(socket, players: players, is_game_finished: nil)}
   end
   def handle_info(_, socket), do: {:noreply, socket}
 

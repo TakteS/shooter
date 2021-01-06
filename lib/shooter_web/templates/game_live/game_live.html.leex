@@ -1,0 +1,37 @@
+<div id="game" phx-window-keyup="update_field" phx-throttle="150">
+  <%= if @is_game_finished do %>
+    <b>Game was finished because of <%= @reason_of_finish %></b>
+    <br />
+    <button phx-click="restart_game">Start new!</button>
+  <% else %>
+    Link to join game: <b><%= Routes.lobby_url(ShooterWeb.Endpoint, :index, @session_id) %></b>
+    <br />
+    <b>Kill your opponent or capture (by shooting) his flag to win. Don't touch fire!</b>
+    <br />
+    <%= if @scores != %{} do %>
+      <b>Players: </b>
+      <%= for {{color, name}, index} <- Enum.with_index(@players, 1) do %>
+        <b><font color="<%= color %>"><%= name %></font></b><%= if index < Enum.count(@players), do: "," %>
+      <% end %>
+      <br />
+      <b>Scores: </b> <b><font color="blue"><%= @scores.blue %></font></b> - <b><font color="red"><%= @scores.red %></font></b>
+    <% end %>
+    <br />
+    <br />
+    <%= for field_units <- Enum.chunk_every(@game_field, @field_width) do %>
+      <div class="field-line">
+        <%= for unit <- field_units do %>
+          <%= case unit do %>
+            <% :grass -> %> <img src="<%= Routes.static_path(ShooterWeb.Endpoint, "/images/grass.png") %>" height="35" width="35" class="field-unit"/>
+            <% :wall -> %> <img src="<%= Routes.static_path(ShooterWeb.Endpoint, "/images/wall.png") %>" height="35" width="35" class="field-unit"/>
+            <% :blood -> %> <img src="<%= Routes.static_path(ShooterWeb.Endpoint, "/images/blood.png") %>" height="35" width="35" class="field-unit"/>
+            <% :fire -> %> <img src="<%= Routes.static_path(ShooterWeb.Endpoint, "/images/fire.png") %>" height="35" width="35" class="field-unit"/>
+            <% %Shooter.Flag{color: color} -> %> <img src="<%= Routes.static_path(ShooterWeb.Endpoint, "/images/#{color}_flag.png") %>" height="35" width="35" class="field-unit"/>
+            <% %Shooter.Player{color: color, direction: direction} -> %> <img src="<%= Routes.static_path(ShooterWeb.Endpoint, "/images/#{color}_player_#{direction}.png") %>" height="35" width="35" class="field-unit"/>
+          <% end %>
+        <% end %>
+      </div>
+    <% end %>
+  </div>
+  <% end %>
+</div>

@@ -1,7 +1,9 @@
 # Shooter
-The "Shooter" (and also a builder!) game for 2 players. The application was created just to play with Phoenix LiveViev. 
+The "Shooter" (and also a builder!) game for 2 players. The application was created just to play with Phoenix LiveViev.
 
 ## Demo
+
+[`shtr-game.herokuapp.com`](https://shtr-game.herokuapp.com)
 
 <img align="center" alt="example" src="./example.gif">
 

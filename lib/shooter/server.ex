@@ -1,6 +1,6 @@
 defmodule Shooter.Server do
   defmodule State do
-    defstruct [available_colors: [:blue, :red], names: %{}, game_field: nil, positions: nil]
+    defstruct [available_colors: [:blue, :red], names: %{}, game_field: nil, positions: nil, reason_of_finish: nil]
   end
 
   use GenServer
@@ -16,8 +16,10 @@ defmodule Shooter.Server do
 
   @shooting_max_distance 3
 
+  @inactive_timeout 20_000
+
   def start_link(opts) do
-    session_id = Keyword.fetch!(opts, :session_id) |> String.replace("-", "-") |> String.to_atom()
+    session_id = Keyword.fetch!(opts, :session_id) |> String.replace("-", "-") |> String.to_atom() |> IO.inspect()
 
     case Process.whereis(session_id) do
       nil ->
@@ -28,8 +30,7 @@ defmodule Shooter.Server do
   end
 
   def init(state) do
-    schedule_game_finish_job()
-    {:ok, state}
+    {:ok, state, @inactive_timeout}
   end
 
   def get_field(pid) do
@@ -44,6 +45,10 @@ defmodule Shooter.Server do
     GenServer.call(pid, :get_warriors)
   end
 
+  def get_reason_of_finish(pid) do
+    GenServer.call(pid, :get_reason_of_finish)
+  end
+
   def move(pid, color, direction) when direction in @directions do
     GenServer.call(pid, {:move, color, direction})
   end
@@ -56,35 +61,48 @@ defmodule Shooter.Server do
     GenServer.call(pid, {:add_wall, color})
   end
 
+  def restart_game(pid) do
+    GenServer.call(pid, :restart_game)
+  end
+
   def handle_call(:get_field, _from, state) do
-    {:reply, state.game_field, state}
+    {:reply, state.game_field, state, @inactive_timeout}
   end
 
   def handle_call({:bind_color, name}, _from, state) do
     if state.available_colors != [] do
       [color | rest_collors] = state.available_colors
       updated_state = %{state | available_colors: rest_collors, names: Map.put(state.names, name, color)}
-      {:reply, color, updated_state}
+      {:reply, color, updated_state, @inactive_timeout}
     else
-      {:reply, {:error, :no_available_colors}, state}
+      {:reply, {:error, :no_available_colors}, state, @inactive_timeout}
     end
   end
 
   def handle_call(:get_warriors, _from, state) do
-    {:reply, state.names, state}
+    {:reply, state.names, state, @inactive_timeout}
+  end
+
+  def handle_call(:get_reason_of_finish, _from, state) do
+    {:reply, state.reason_of_finish, state, @inactive_timeout}
+  end
+
+  def handle_call(:restart_game, _from, _state) do
+    new_state = build_initial_state()
+    {:reply, new_state.game_field, new_state, @inactive_timeout}
   end
 
   def handle_call({:move, color, direction}, _from, %State{game_field: field, positions: positions} = state) do
     current_position = positions[color] - 1
     warrior = Enum.at(field, current_position)
 
-    {updated_field, updated_positions} =
+    {updated_field, updated_positions, reason_of_finish} =
       case {warrior.direction, direction} do
         {current, new} when current != new ->
           updated_warrior = Warrior.change_direction(warrior, direction)
           updated_field = List.replace_at(field, current_position, updated_warrior)
           Logger.debug("Warrior #{color} changed direction on #{direction}")
-          {updated_field, positions}
+          {updated_field, positions, nil}
 
         {current, new} when current == new ->
           Logger.debug("Processing #{color} warrior moving #{new}")
@@ -92,46 +110,49 @@ defmodule Shooter.Server do
           case can_be_transited(field, current_position, new) do
             {:ok, new_position} ->
               Logger.debug("New #{color} warrior position is #{new_position}")
+              warrior_or_blood = warrior_or_blood(field, warrior, new_position)
+              reason_of_finish = if warrior_or_blood == :blood, do: "#{color} warrior burned himself", else: nil
+
               updated_field =
                 field
                 |> List.replace_at(current_position, :grass)
-                |> List.replace_at(new_position, warrior)
+                |> List.replace_at(new_position, warrior_or_blood)
 
               updated_positions = Map.put(positions, color, new_position + 1)
-              {updated_field, updated_positions}
+              {updated_field, updated_positions, reason_of_finish}
 
             :error ->
-              {field, positions}
+              {field, positions, nil}
           end
         _ ->
-          {field, positions}
+          {field, positions, nil}
       end
 
-    updated_state = %{state | game_field: updated_field, positions: updated_positions}
-    {:reply, updated_field, updated_state}
+    updated_state = %{state | game_field: updated_field, positions: updated_positions, reason_of_finish: reason_of_finish}
+    {:reply, updated_field, updated_state, @inactive_timeout}
   end
 
   def handle_call({:shoot, color}, _from, %State{game_field: field, positions: positions} = state) do
     current_position = positions[color] - 1
     warrior = Enum.at(field, current_position)
 
-    updated_field =
+    {updated_field, reason_of_finish} =
       case do_shoot(field, current_position, warrior.direction) do
         {:wall, position} ->
           Logger.debug("Warrior #{color} shooted at wall at position #{position}")
-          List.replace_at(field, position, :grass)
+          {List.replace_at(field, position, grass_or_fire()), nil}
 
         {:warrior, position} ->
           Logger.debug("Warrior #{color} killed his opponent!")
-          List.replace_at(field, position, :blood)
+          {List.replace_at(field, position, :blood), "#{color} warrior killed an opponent"}
 
         _ ->
           Logger.debug("#{color} warrior's bullet didn't reach any target")
-          field
+          {field, nil}
       end
 
-    updated_state = %{state | game_field: updated_field}
-    {:reply, updated_field, updated_state}
+    updated_state = %{state | game_field: updated_field, reason_of_finish: reason_of_finish}
+    {:reply, updated_field, updated_state, @inactive_timeout}
   end
 
   def handle_call({:add_wall, color}, _from, %State{game_field: field, positions: positions} = state) do
@@ -150,19 +171,15 @@ defmodule Shooter.Server do
       end
 
     updated_state = %{state | game_field: updated_field}
-    {:reply, updated_field, updated_state}
+    {:reply, updated_field, updated_state, @inactive_timeout}
   end
 
-  def handle_info(:check_game_finish, state) do
-    state =
-      if :blood in state.game_field do
-        build_initial_state()
-      else
-        state
-      end
+  def handle_info(:timeout, state) do
+    {:stop, :normal, state}
+  end
 
-    schedule_game_finish_job()
-    {:noreply, state}
+  def terminate(reason, _state) do
+    reason
   end
 
   defp can_be_transited(field, current_position, direction) do
@@ -203,7 +220,7 @@ defmodule Shooter.Server do
     end
   end
 
-  defp valid_base_transition?(new_position, field), do: new_position in 0..(@field_size - 1) && Enum.at(field, new_position) == :grass
+  defp valid_base_transition?(new_position, field), do: new_position in 0..(@field_size - 1) && Enum.at(field, new_position) in [:grass, :fire]
 
   defp valid_horizontal_transition?(position, new_position, :rigth), do: position < new_position && position_in_same_line?(position, new_position)
   defp valid_horizontal_transition?(position, new_position, :left), do: position > new_position && position_in_same_line?(position, new_position)
@@ -265,5 +282,12 @@ defmodule Shooter.Server do
     %State{game_field: initial_field, positions: inital_positions}
   end
 
-  defp schedule_game_finish_job(), do: Process.send_after(self(), :check_game_finish, 2000)
+  defp grass_or_fire(), do: Enum.random([:grass, :grass, :grass, :grass, :fire])
+
+  defp warrior_or_blood(field, warrior, new_position) do
+    case Enum.at(field, new_position) do
+      :fire -> :blood
+      _ -> warrior
+    end
+  end
 end

@@ -1,4 +1,4 @@
-<div id="game" phx-window-keyup="update_field" phx-throttle="150">
+<div id="game" phx-window-keyup="update_field" phx-throttle="50">
   <%= if @is_game_finished do %>
     <b>Game was finished because of <%= @reason_of_finish %></b>
     <br />

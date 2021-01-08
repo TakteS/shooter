@@ -105,41 +105,46 @@ defmodule Shooter.Server do
     player_unit = Enum.at(field, current_position)
     player = player_unit.entity
 
-    {updated_field, updated_positions, reason_of_finish, updated_scores} =
-      case {player.direction, direction} do
-        {current, new} when current != new ->
-          updated_player = %{player_unit | entity: Player.change_direction(player, direction)}
-          updated_field = List.replace_at(field, current_position, updated_player)
-          Logger.debug("Player #{color} changed direction on #{direction}")
-          {updated_field, positions, nil, scores}
+    with %Player{} <- player do
+      {updated_field, updated_positions, reason_of_finish, updated_scores} =
+        case {player.direction, direction} do
+          {current, new} when current != new ->
+            updated_player = %{player_unit | entity: Player.change_direction(player, direction)}
+            updated_field = List.replace_at(field, current_position, updated_player)
+            Logger.debug("Player #{color} changed direction on #{direction}")
+            {updated_field, positions, nil, scores}
 
-        {current, new} when current == new ->
-          Logger.debug("Processing #{color} player moving #{new}")
+          {current, new} when current == new ->
+            Logger.debug("Processing #{color} player moving #{new}")
 
-          case can_be_transited(field, current_position, new) do
-            {:ok, new_position} ->
-              Logger.debug("New #{color} player position is #{new_position}")
-              player_or_blood = player_or_blood(field, player, new_position)
-              reason_of_finish = if player_or_blood.entity == :blood, do: "#{color} player burned himself", else: nil
-              updated_scores = if player_or_blood.entity == :blood, do: Map.update!(scores, color, & &1 - 1), else: scores
+            case can_be_transited(field, current_position, new) do
+              {:ok, new_position} ->
+                Logger.debug("New #{color} player position is #{new_position}")
+                player_or_blood = player_or_blood(field, player, new_position)
+                reason_of_finish = if player_or_blood.entity == :blood, do: "#{color} player burned himself", else: nil
+                updated_scores = if player_or_blood.entity == :blood, do: Map.update!(scores, color, & &1 - 1), else: scores
 
-              updated_field =
-                field
-                |> List.replace_at(current_position, Unit.build(:grass, current_position))
-                |> List.replace_at(new_position, player_or_blood)
+                updated_field =
+                  field
+                  |> List.replace_at(current_position, Unit.build(:grass, current_position))
+                  |> List.replace_at(new_position, player_or_blood)
 
-              updated_positions = Map.put(positions, color, new_position + 1)
-              {updated_field, updated_positions, reason_of_finish, updated_scores}
+                updated_positions = Map.put(positions, color, new_position + 1)
+                {updated_field, updated_positions, reason_of_finish, updated_scores}
 
-            :error ->
-              {field, positions, nil, scores}
-          end
-        _ ->
-          {field, positions, nil, scores}
-      end
+              :error ->
+                {field, positions, nil, scores}
+            end
+          _ ->
+            {field, positions, nil, scores}
+        end
 
-    updated_state = %{state | game_field: updated_field, positions: updated_positions, reason_of_finish: reason_of_finish, scores: updated_scores}
-    {:reply, updated_field -- field, updated_state, @inactive_timeout}
+      updated_state = %{state | game_field: updated_field, positions: updated_positions, reason_of_finish: reason_of_finish, scores: updated_scores}
+      {:reply, updated_field -- field, updated_state, @inactive_timeout}
+    else
+      _ ->
+        {:reply, field, state, @inactive_timeout}
+    end
   end
 
   def handle_call({:shoot, color}, _from, %State{game_field: field, positions: positions, scores: scores} = state) do

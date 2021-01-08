@@ -62,7 +62,7 @@ defmodule ShooterWeb.GameLive do
   end
   def handle_event("restart_game", _value, socket) do
     {updated_field, scores} = Server.restart_game(socket.assigns.pid)
-    Phoenix.PubSub.broadcast(Shooter.PubSub, topic(socket.assigns.session_id), {"update_field_units", updated_field})
+    Phoenix.PubSub.broadcast(Shooter.PubSub, topic(socket.assigns.session_id), {"update_field_units", updated_field, scores})
     {:noreply, assign(socket, game_field: updated_field, scores: scores, is_game_finished: nil)}
   end
   def handle_event("update_field", _, socket), do: {:noreply, socket}
@@ -70,6 +70,9 @@ defmodule ShooterWeb.GameLive do
   @impl true
   def handle_info({"update_field_units", new_units}, socket) do
     {:noreply, assign(socket, game_field: new_units)}
+  end
+  def handle_info({"update_field_units", new_units, scores}, socket) do
+    {:noreply, assign(socket, game_field: new_units, scores: scores)}
   end
   def handle_info("player_joined", socket) do
     players = Server.get_players(socket.assigns.pid)

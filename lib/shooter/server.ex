@@ -307,11 +307,11 @@ defmodule Shooter.Server do
   defp build_initial_state(players, scores, available_colors) do
     base_field = Enum.map(3..(@field_size - 2), fn _n -> Enum.random(@field_units) end)
     initial_field =
-      [Player.build(:blue, :down), Flag.build(:blue)] ++ base_field ++ [Flag.build(:red), Player.build(:red, :up)]
+      [Flag.build(:blue), Player.build(:blue, :down)] ++ base_field ++ [Player.build(:red, :up), Flag.build(:red)]
       |> Enum.with_index()
       |> Enum.map(fn {e, i} -> Unit.build(e, i) end)
 
-    inital_positions = %{blue: 1, red: @field_size}
+    inital_positions = %{blue: 2, red: @field_size - 1}
     %State{game_field: initial_field, positions: inital_positions, players: players, scores: scores, available_colors: available_colors}
   end
 

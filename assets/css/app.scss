@@ -98,3 +98,11 @@
 .field-unit {
   float: left;
 }
+
+#main-game-field {
+  display: grid;
+  grid-template-rows: 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px;
+  grid-template-columns: 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px 35px;
+  grid-gap: 0vw;
+  padding-top: 0;
+}

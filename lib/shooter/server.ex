@@ -4,13 +4,19 @@ defmodule Shooter.Server do
     defstruct [scores: %{blue: 0, red: 0}, available_colors: [:blue, :red], players: %{}, game_field: nil, positions: nil, reason_of_finish: nil]
   end
 
+  defmodule Unit do
+    defstruct [entity: nil, id: nil]
+
+    def build(entity, id), do: %__MODULE__{entity: entity, id: id}
+  end
+
   use GenServer
 
   alias Shooter.{Player, Flag}
 
   require Logger
 
-  @field_size 500
+  @field_size 400
   @field_units [:grass, :wall]
 
   @directions [:up, :down, :left, :right]
@@ -20,7 +26,7 @@ defmodule Shooter.Server do
   @inactive_timeout 60 * 3 * 1000 # 3 minutes
 
   def start_link(opts) do
-    session_id = Keyword.fetch!(opts, :session_id) |> String.replace("-", "-") |> String.to_atom() |> IO.inspect()
+    session_id = Keyword.fetch!(opts, :session_id) |> String.replace("-", "-") |> String.to_atom()
 
     case Process.whereis(session_id) do
       nil ->
@@ -91,17 +97,18 @@ defmodule Shooter.Server do
 
   def handle_call(:restart_game, _from, state) do
     new_state = build_initial_state(state.players, state.scores, state.available_colors)
-    {:reply, new_state.game_field, new_state, @inactive_timeout}
+    {:reply, {new_state.game_field, state.scores}, new_state, @inactive_timeout}
   end
 
   def handle_call({:move, color, direction}, _from, %State{game_field: field, positions: positions, scores: scores} = state) do
     current_position = positions[color] - 1
-    player = Enum.at(field, current_position)
+    player_unit = Enum.at(field, current_position)
+    player = player_unit.entity
 
     {updated_field, updated_positions, reason_of_finish, updated_scores} =
       case {player.direction, direction} do
         {current, new} when current != new ->
-          updated_player = Player.change_direction(player, direction)
+          updated_player = %{player_unit | entity: Player.change_direction(player, direction)}
           updated_field = List.replace_at(field, current_position, updated_player)
           Logger.debug("Player #{color} changed direction on #{direction}")
           {updated_field, positions, nil, scores}
@@ -113,12 +120,12 @@ defmodule Shooter.Server do
             {:ok, new_position} ->
               Logger.debug("New #{color} player position is #{new_position}")
               player_or_blood = player_or_blood(field, player, new_position)
-              reason_of_finish = if player_or_blood == :blood, do: "#{color} player burned himself", else: nil
-              updated_scores = if player_or_blood == :blood, do: Map.update!(scores, color, & &1 - 1), else: scores
+              reason_of_finish = if player_or_blood.entity == :blood, do: "#{color} player burned himself", else: nil
+              updated_scores = if player_or_blood.entity == :blood, do: Map.update!(scores, color, & &1 - 1), else: scores
 
               updated_field =
                 field
-                |> List.replace_at(current_position, :grass)
+                |> List.replace_at(current_position, Unit.build(:grass, current_position))
                 |> List.replace_at(new_position, player_or_blood)
 
               updated_positions = Map.put(positions, color, new_position + 1)
@@ -132,28 +139,29 @@ defmodule Shooter.Server do
       end
 
     updated_state = %{state | game_field: updated_field, positions: updated_positions, reason_of_finish: reason_of_finish, scores: updated_scores}
-    {:reply, updated_field, updated_state, @inactive_timeout}
+    {:reply, updated_field -- field, updated_state, @inactive_timeout}
   end
 
   def handle_call({:shoot, color}, _from, %State{game_field: field, positions: positions, scores: scores} = state) do
     current_position = positions[color] - 1
-    player = Enum.at(field, current_position)
+    player_unit = Enum.at(field, current_position)
+    player = player_unit.entity
 
     {updated_field, reason_of_finish, updated_scores} =
       case do_shoot(player.color, field, current_position, player.direction) do
         {:wall, position} ->
           Logger.debug("Player #{color} shooted at wall at position #{position}")
-          {List.replace_at(field, position, grass_or_fire()), nil, scores}
+          {List.replace_at(field, position, grass_or_fire(position)), nil, scores}
 
         {:player, position} ->
           Logger.debug("Player #{color} killed his opponent!")
           updated_scores = Map.update!(scores, color, & &1 + 1)
-          {List.replace_at(field, position, :blood), "#{color} player killed an opponent", updated_scores}
+          {List.replace_at(field, position, Unit.build(:blood, position)), "#{color} player killed an opponent", updated_scores}
 
         {:flag, position} ->
           Logger.debug("Player #{color} captured opponent's flag!")
           updated_scores = Map.update!(scores, color, & &1 + 1)
-          {List.replace_at(field, position, :grass), "#{color} player captured opponent's flag", updated_scores}
+          {List.replace_at(field, position, Unit.build(:grass, position)), "#{color} player captured opponent's flag", updated_scores}
 
         _ ->
           Logger.debug("#{color} player's bullet didn't reach any target")
@@ -161,18 +169,19 @@ defmodule Shooter.Server do
       end
 
     updated_state = %{state | game_field: updated_field, reason_of_finish: reason_of_finish, scores: updated_scores}
-    {:reply, updated_field, updated_state, @inactive_timeout}
+    {:reply, updated_field -- field, updated_state, @inactive_timeout}
   end
 
   def handle_call({:add_wall, color}, _from, %State{game_field: field, positions: positions} = state) do
     current_position = positions[color] - 1
-    player = Enum.at(field, current_position)
+    player_unit = Enum.at(field, current_position)
+    player = player_unit.entity
 
     updated_field =
       case can_add_wall(field, current_position, player.direction) do
         {:ok, position} ->
           Logger.debug("Player #{color} added wall at position #{position}")
-          List.replace_at(field, position, :wall)
+          List.replace_at(field, position, Unit.build(:wall, position))
 
         _ ->
           Logger.debug("#{color} player's cannot add wall at this position")
@@ -180,7 +189,7 @@ defmodule Shooter.Server do
       end
 
     updated_state = %{state | game_field: updated_field}
-    {:reply, updated_field, updated_state, @inactive_timeout}
+    {:reply, updated_field -- field, updated_state, @inactive_timeout}
   end
 
   def handle_info(:timeout, state) do
@@ -229,7 +238,7 @@ defmodule Shooter.Server do
     end
   end
 
-  defp valid_base_transition?(new_position, field), do: new_position in 0..(@field_size - 1) && Enum.at(field, new_position) in [:grass, :fire]
+  defp valid_base_transition?(new_position, field), do: new_position in 0..(@field_size - 1) && Enum.at(field, new_position).entity in [:grass, :fire]
 
   defp valid_horizontal_transition?(position, new_position, :right), do: position < new_position && positions_in_same_line?(position, new_position)
   defp valid_horizontal_transition?(position, new_position, :left), do: position > new_position && positions_in_same_line?(position, new_position)
@@ -259,8 +268,9 @@ defmodule Shooter.Server do
 
     shootable_targets =
       possible_tagtets
-      |> Enum.map(fn {%Player{}, position} -> {:player, position};
-                     {%Flag{color: flag_color}, position} -> (if flag_color != color, do: {:flag, position}, else: {:own_flag, position});
+      |> Enum.map(fn {%Unit{entity: %Player{}}, position} -> {:player, position};
+                     {%Unit{entity: %Flag{color: flag_color}}, position} -> (if flag_color != color, do: {:flag, position}, else: {:own_flag, position});
+                     {%Unit{entity: entity}, position} -> {entity, position};
                      other -> other
       end)
       |> Enum.filter(fn
@@ -291,18 +301,26 @@ defmodule Shooter.Server do
 
   defp build_initial_state(players, scores, available_colors) do
     base_field = Enum.map(3..(@field_size - 2), fn _n -> Enum.random(@field_units) end)
-    initial_field = [Player.build(:blue, :down), Flag.build(:blue)] ++ base_field ++ [Flag.build(:red), Player.build(:red, :up)]
+    initial_field =
+      [Player.build(:blue, :down), Flag.build(:blue)] ++ base_field ++ [Flag.build(:red), Player.build(:red, :up)]
+      |> Enum.with_index()
+      |> Enum.map(fn {e, i} -> Unit.build(e, i) end)
 
     inital_positions = %{blue: 1, red: @field_size}
     %State{game_field: initial_field, positions: inital_positions, players: players, scores: scores, available_colors: available_colors}
   end
 
-  defp grass_or_fire(), do: Enum.random([:grass, :grass, :grass, :grass, :fire])
+  defp grass_or_fire(position) do
+    grass = Unit.build(:grass, position)
+    fire = Unit.build(:fire, position)
+
+    Enum.random([grass, grass, grass, grass, fire])
+  end
 
   defp player_or_blood(field, player, new_position) do
     case Enum.at(field, new_position) do
-      :fire -> :blood
-      _ -> player
+      %Unit{entity: :fire} -> Unit.build(:blood, new_position)
+      _ -> Unit.build(player, new_position)
     end
   end
 

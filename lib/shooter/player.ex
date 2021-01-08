@@ -1,5 +1,5 @@
 defmodule Shooter.Player do
-  defstruct [name: nil, color: nil, direction: nil]
+  defstruct [color: nil, direction: nil]
 
   @colors [:blue, :red]
   @directions [:up, :down, :left, :right]
